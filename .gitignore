@@ -1,0 +1,9 @@
+#folder
+/target
+
+#rust
+Cargo.lock
+
+#executable
+main
+
