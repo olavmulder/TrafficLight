@@ -1,14 +1,18 @@
-#![allow(non_snake_case)]
-
-
-use defmt_rtt as _;
-use embedded_hal::digital::v2::{ToggleableOutputPin};
-use panic_probe as _;
-use rp2040_hal;
-
-// Provide an alias for our BSP so we can switch targets quickly.
-// Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
-use rp_pico as bsp;
+use hal::gpio::PushPullOutput;
+// Alias for our HAL crate
+use rp2040_hal as hal;
+// A shorter alias for the Peripheral Access Crate, which provides low-level
+// register access
+use embedded_hal::digital::v2::ToggleableOutputPin;
+// Our interrupt macro
+// Some short-cuts to useful types
+use rp2040_hal::gpio;
+// The GPIO interrupt type we're going to generate
+use hal::pac::interrupt;
+// Some short-cuts to useful types
+use core::cell::RefCell;
+use critical_section::Mutex;
+use rp2040_hal::gpio::Interrupt::EdgeLow;
 
 #[derive(PartialEq)] pub enum State {
    Red = 0,
@@ -16,27 +20,66 @@ use rp_pico as bsp;
    Green,
 }
 
-use crate::controler::trafficlight::rp2040_hal::gpio::bank0::Gpio21;
-use crate::controler::trafficlight::rp2040_hal::gpio::bank0::Gpio20;
-use crate::controler::trafficlight::rp2040_hal::gpio::bank0::Gpio19;
-use crate::controler::trafficlight::rp2040_hal::gpio::PushPullOutput;
+type ButtonPin = gpio::Pin<gpio::bank0::Gpio15, gpio::FloatingInput>;
+type LedPin = gpio::Pin<gpio::bank0::Gpio19, gpio::PushPullOutput>;
+type LedAndButton = (ButtonPin, LedPin);
+static GLOBAL_PINS: Mutex<RefCell<Option<LedAndButton>>> = Mutex::new(RefCell::new(None));
 
-struct GpioLed
-{
-   red   :  rp2040_hal::gpio::Pin<Gpio21,PushPullOutput>,
-   green :  rp2040_hal::gpio::Pin<Gpio20,PushPullOutput>,
-   yellow:  rp2040_hal::gpio::Pin<Gpio19,PushPullOutput>,
+#[interrupt]
+
+unsafe fn IO_IRQ_BANK0() {
+    // The `#[interrupt]` attribute covertly converts this to `&'static mut Option<LedAndButton>`
+    static mut LED_AND_BUTTON: Option<LedAndButton> = None;
+
+    // This is one-time lazy initialisation. We steal the variables given to us
+    // via `GLOBAL_PINS`.
+    if LED_AND_BUTTON.is_none() {
+        critical_section::with(|cs| {
+            *LED_AND_BUTTON = GLOBAL_PINS.borrow(cs).take();
+        });
+    }
+
+    // Need to check if our Option<LedAndButtonPins> contains our pins
+    if let Some(gpios) = LED_AND_BUTTON {
+        // borrow led and button by *destructuring* the tuple
+        // these will be of type `&mut LedPin` and `&mut ButtonPin`, so we don't have
+        // to move them back into the static after we use them
+        let (button, led) = gpios;
+        // Check if the interrupt source is from the pushbutton going from high-to-low.
+        // Note: this will always be true in this example, as that is the only enabled GPIO interrupt source
+        if button.interrupt_status(EdgeLow) {
+            // toggle can't fail, but the embedded-hal traits always allow for it
+            // we can discard the return value by assigning it to an unnamed variable
+            let _ = led.toggle();
+
+            // Our interrupt doesn't clear itself.
+            // Do that now so we don't immediately jump back to this interrupt handler.
+            button.clear_interrupt(EdgeLow);
+        }
+    }
+}
+struct Gpio
+{  
+   red   :  gpio::Pin<gpio::bank0::Gpio21, PushPullOutput>,
+   green :  gpio::Pin<gpio::bank0::Gpio20, PushPullOutput>,
 }
 
-impl GpioLed
+impl Gpio
 {
-   pub fn new(pins: bsp::Pins) -> Self
+   pub fn new(pins: hal::gpio::Pins) -> Self
    {
-      
-      GpioLed { 
+      let button_pin = pins.gpio15.into_floating_input();
+      let led_pin = pins.gpio19.into_push_pull_output();
+     
+      button_pin.set_interrupt_enabled(EdgeLow, true);
+      critical_section::with(|cs| {
+         GLOBAL_PINS.borrow(cs).replace(Some((button_pin, led_pin)));
+      });
+     
+ 
+      Gpio { 
          red   : pins.gpio21.into_push_pull_output(),
          green : pins.gpio20.into_push_pull_output(),
-         yellow: pins.gpio19.into_push_pull_output(),
       }
    }
 
@@ -50,24 +93,24 @@ impl GpioLed
 pub struct TrafficLight
 {
    pub state: State,
-   led : GpioLed
+   led : Gpio
 }
 
 
 impl TrafficLight
 {
-   pub fn  new(pins: bsp::Pins) -> Self
+   pub fn  new(pins: hal::gpio::Pins) -> Self
    {
       TrafficLight
       {
          state: State::Red,
-         led : GpioLed::new(pins)
+         led : Gpio::new(pins)
       }
    }
 
    pub fn SetState(&mut self, st: State)
    {
       self.state = st;
-      GpioLed::ToggleRedLed(&mut self.led);
+      Gpio::ToggleRedLed(&mut self.led);
    }
 }

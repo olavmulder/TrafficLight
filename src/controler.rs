@@ -1,7 +1,5 @@
 pub mod trafficlight;
-use crate::controler::trafficlight::State;
-
-use rp_pico as bsp;
+use rp2040_hal as hal;
 
 pub struct Controller
 {
@@ -9,11 +7,12 @@ pub struct Controller
 }
 impl Controller
 {
-   pub fn new(pins: bsp::Pins) -> Self
+   pub fn new(pins: hal::gpio::Pins) -> Self
    {
       
       let a: trafficlight::TrafficLight = 
             trafficlight::TrafficLight::new(pins);
+      
       Self{
          lights : [a]
       }
@@ -21,7 +20,7 @@ impl Controller
 
    pub fn logic(&mut self)
    {
-      self.lights[0].SetState(State::Red);
+      self.lights[0].SetState(trafficlight::State::Red);
    }
 
 }
